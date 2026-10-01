@@ -1,39 +1,33 @@
 import asyncio
 import json
+import shutil
+import uuid
 from pathlib import Path
 from uuid import UUID
 
 import redis
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.database import get_db
 from app.models.job import Job, JobStatus
-from app.schemas import JobCreate, JobOut
+from app.schemas import JobOut
+from app.services.album_images import IMAGE_SUFFIXES, is_image_path
 from app.services.progress import channel_for, get_cached_progress
 from app.services.rate_limit import enforce_rate_limit
-from app.tasks.pdf_report import generate_pdf_report
+from app.tasks.album_press import process_album
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 settings = get_settings()
 
-
-def _sample_rows(count: int) -> list[dict]:
-    return [
-        {
-            "id": i + 1,
-            "account": f"ACC-{1000 + i}",
-            "region": ["North", "South", "East", "West"][i % 4],
-            "amount": round(100 + (i * 17.3) % 900, 2),
-            "status": ["open", "closed", "pending"][i % 3],
-        }
-        for i in range(count)
-    ]
+MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100 MB
+MAX_FILES = 200
 
 
 def _to_out(job: Job) -> JobOut:
+    payload = job.payload or {}
     return JobOut(
         id=job.id,
         title=job.title,
@@ -43,46 +37,118 @@ def _to_out(job: Job) -> JobOut:
         message=job.message,
         error=job.error,
         result_path=job.result_path,
+        image_count=payload.get("image_count"),
+        has_zip=bool(payload.get("result_zip")),
         created_at=job.created_at,
         updated_at=job.updated_at,
     )
 
 
+def _parse_bool(value: str | None, default: bool) -> bool:
+    if value is None or value == "":
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 @router.post("", response_model=JobOut, status_code=status.HTTP_201_CREATED)
-def create_job(
-    body: JobCreate,
+async def create_job(
     request: Request,
     db: Session = Depends(get_db),
+    files: list[UploadFile] = File(..., description="ZIP or image files"),
+    title: str | None = Form(None),
+    max_width: int = Form(1600),
+    quality: int = Form(85),
+    strip_exif: str | None = Form("true"),
+    layout: str = Form("page"),
+    grid_cols: int = Form(2),
 ) -> JobOut:
     enforce_rate_limit(request)
 
-    rows = body.rows
-    if body.row_count is not None:
-        rows = _sample_rows(body.row_count)
-    if not rows and not body.sections:
-        rows = _sample_rows(25)
-        sections = [
-            {
-                "heading": "Executive summary",
-                "body": "Auto-generated sample report for the async processing demo.",
-            }
-        ]
-    else:
-        sections = [s.model_dump() for s in body.sections]
+    if not files:
+        raise HTTPException(status_code=400, detail="Upload a ZIP or one or more images")
+    if len(files) > MAX_FILES:
+        raise HTTPException(status_code=400, detail=f"Too many files (max {MAX_FILES})")
+
+    max_width = max(400, min(int(max_width), 4000))
+    quality = max(40, min(int(quality), 95))
+    grid_cols = max(1, min(int(grid_cols), 4))
+    layout = layout if layout in {"page", "grid"} else "page"
+    do_strip = _parse_bool(strip_exif, True)
+
+    job_id = uuid.uuid4()
+    work_dir = Path(settings.upload_dir) / str(job_id)
+    raw_dir = work_dir / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+
+    total_size = 0
+    saved = 0
+    try:
+        for upload in files:
+            name = Path(upload.filename or "upload.bin").name
+            lower = name.lower()
+            is_zip = lower.endswith(".zip")
+            is_img = Path(lower).suffix in IMAGE_SUFFIXES
+            if not is_zip and not is_img:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unsupported file type: {name}. Use ZIP or jpg/png/webp/gif.",
+                )
+            dest = raw_dir / name
+            with dest.open("wb") as out:
+                while True:
+                    chunk = await upload.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total_size += len(chunk)
+                    if total_size > MAX_UPLOAD_BYTES:
+                        raise HTTPException(status_code=400, detail="Upload exceeds 100 MB limit")
+                    out.write(chunk)
+            if dest.stat().st_size == 0:
+                dest.unlink(missing_ok=True)
+                continue
+            saved += 1
+            await upload.close()
+    except HTTPException:
+        shutil.rmtree(work_dir, ignore_errors=True)
+        raise
+    except Exception:
+        shutil.rmtree(work_dir, ignore_errors=True)
+        raise
+
+    if saved == 0:
+        shutil.rmtree(work_dir, ignore_errors=True)
+        raise HTTPException(status_code=400, detail="Uploaded files were empty")
+
+    # Quick sanity: if no zip, ensure at least one image exists
+    has_zip = any(p.suffix.lower() == ".zip" for p in raw_dir.iterdir())
+    has_img = any(is_image_path(p) for p in raw_dir.iterdir() if p.is_file())
+    if not has_zip and not has_img:
+        shutil.rmtree(work_dir, ignore_errors=True)
+        raise HTTPException(status_code=400, detail="No images found in upload")
+
+    report_title = (title or "").strip() or "Album Press"
 
     job = Job(
-        title=body.title,
+        id=job_id,
+        title=report_title,
         status=JobStatus.queued,
         progress=0,
         stage="queued",
         message="Waiting for a worker",
-        payload={"sections": sections, "rows": rows},
+        payload={
+            "work_dir": str(work_dir),
+            "max_width": max_width,
+            "quality": quality,
+            "strip_exif": do_strip,
+            "layout": layout,
+            "grid_cols": grid_cols,
+        },
     )
     db.add(job)
     db.commit()
     db.refresh(job)
 
-    async_result = generate_pdf_report.delay(str(job.id))
+    async_result = process_album.delay(str(job.id))
     job.celery_task_id = async_result.id
     db.commit()
     db.refresh(job)
@@ -164,25 +230,43 @@ async def job_events(job_id: UUID, db: Session = Depends(get_db)) -> StreamingRe
 
 
 @router.get("/{job_id}/download")
-def download_job(job_id: UUID, db: Session = Depends(get_db)) -> FileResponse:
+def download_job(
+    job_id: UUID,
+    kind: str = "pdf",
+    db: Session = Depends(get_db),
+) -> FileResponse:
     job = db.get(Job, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    if job.status != JobStatus.completed or not job.result_path:
-        raise HTTPException(status_code=409, detail="PDF not ready")
-    path = Path(job.result_path)
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="PDF file missing")
+    if job.status != JobStatus.completed:
+        raise HTTPException(status_code=409, detail="Album not ready")
+
+    safe_title = "".join(c if c.isalnum() or c in "-_" else "_" for c in job.title)[:80]
+    payload = job.payload or {}
+
+    if kind == "zip":
+        zip_path = payload.get("result_zip")
+        if not zip_path or not Path(zip_path).exists():
+            raise HTTPException(status_code=404, detail="ZIP not available")
+        return FileResponse(
+            zip_path,
+            media_type="application/zip",
+            filename=f"{safe_title}_{job_id}.zip",
+        )
+
+    if not job.result_path or not Path(job.result_path).exists():
+        raise HTTPException(status_code=404, detail="PDF not available")
     return FileResponse(
-        path,
+        job.result_path,
         media_type="application/pdf",
-        filename=f"{job.title.replace(' ', '_')}_{job_id}.pdf",
+        filename=f"{safe_title}_{job_id}.pdf",
     )
 
 
 @router.post("/{job_id}/cancel", response_model=JobOut)
 def cancel_job(job_id: UUID, db: Session = Depends(get_db)) -> JobOut:
     from app.celery_app import celery
+    from app.services.progress import publish_progress
 
     job = db.get(Job, job_id)
     if not job:
@@ -198,8 +282,6 @@ def cancel_job(job_id: UUID, db: Session = Depends(get_db)) -> JobOut:
     job.stage = "cancelled"
     db.commit()
     db.refresh(job)
-
-    from app.services.progress import publish_progress
 
     publish_progress(
         job.id,
