@@ -8,7 +8,7 @@ celery = Celery(
     "report_engine",
     broker=settings.celery_broker_url,
     backend=settings.celery_result_backend,
-    include=["app.tasks.pdf_report"],
+    include=["app.tasks.album_press"],
 )
 
 celery.conf.update(

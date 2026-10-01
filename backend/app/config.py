@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     celery_broker_url: str = "redis://localhost:6379/0"
     celery_result_backend: str = "redis://localhost:6379/1"
     pdf_output_dir: str = "/data/pdfs"
+    upload_dir: str = "/data/uploads"
     rate_limit_per_minute: int = 30
     cors_origins: str = "http://localhost:5173,http://localhost:3000"
 

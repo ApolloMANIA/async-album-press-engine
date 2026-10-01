@@ -30,6 +30,7 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       PDF_OUTPUT_DIR: /data/pdfs
+      UPLOAD_DIR: /data/uploads
       RATE_LIMIT_PER_MINUTE: "30"
       CORS_ORIGINS: http://localhost:5173,http://localhost:3000,http://localhost:8080
     ports:
@@ -37,6 +38,7 @@ services:
     volumes:
       - ./backend:/app
       - ./data/pdfs:/data/pdfs
+      - ./data/uploads:/data/uploads
     depends_on:
       db:
         condition: service_healthy
@@ -52,9 +54,11 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       PDF_OUTPUT_DIR: /data/pdfs
+      UPLOAD_DIR: /data/uploads
     volumes:
       - ./backend:/app
       - ./data/pdfs:/data/pdfs
+      - ./data/uploads:/data/uploads
     depends_on:
       db:
         condition: service_healthy

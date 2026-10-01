@@ -1,17 +1,27 @@
 :root {
-  --bg: #0f1418;
-  --panel: #171e24;
-  --panel-2: #1d262e;
-  --border: #2c3a45;
-  --text: #e6edf2;
-  --muted: #8aa0b0;
-  --accent: #3db88a;
-  --accent-dim: #2a7a5c;
-  --warn: #d4a017;
-  --danger: #d45d5d;
-  --info: #4a9fd8;
-  --font-sans: "IBM Plex Sans", system-ui, sans-serif;
+  --bg: #07080a;
+  --bg-elevated: #0d0f12;
+  --panel: #12151a;
+  --panel-2: #181c22;
+  --panel-hover: #1c2129;
+  --border: #262b33;
+  --border-soft: #1c2027;
+  --text: #f4f6f8;
+  --muted: #8b939e;
+  --muted-2: #5c6570;
+  --accent: #3dd68c;
+  --accent-dim: rgba(61, 214, 140, 0.16);
+  --accent-glow: rgba(61, 214, 140, 0.35);
+  --danger: #ff6b6b;
+  --danger-dim: rgba(255, 107, 107, 0.14);
+  --info: #5eb1ff;
+  --warn: #f0b429;
+  --chart-line: #e8eaed;
+  --radius: 16px;
+  --radius-sm: 10px;
+  --font-sans: "Sora", "Segoe UI", sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
 }
 
 * {
@@ -27,14 +37,19 @@ body,
 
 body {
   font-family: var(--font-sans);
-  background:
-    radial-gradient(ellipse 80% 50% at 10% -10%, #1a2f2a 0%, transparent 55%),
-    radial-gradient(ellipse 60% 40% at 100% 0%, #1a2530 0%, transparent 50%),
-    var(--bg);
   color: var(--text);
+  background:
+    radial-gradient(ellipse 70% 45% at 15% -5%, rgba(61, 214, 140, 0.08), transparent 55%),
+    radial-gradient(ellipse 50% 35% at 90% 0%, rgba(94, 177, 255, 0.06), transparent 50%),
+    var(--bg);
+  -webkit-font-smoothing: antialiased;
 }
 
 button,
 input {
   font: inherit;
+}
+
+code {
+  font-family: var(--font-mono);
 }

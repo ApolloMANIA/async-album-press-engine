@@ -17,9 +17,9 @@ async def lifespan(_: FastAPI):
 settings = get_settings()
 
 app = FastAPI(
-    title="Async Report Engine",
-    description="Distributed real-time PDF report processing showcase",
-    version="1.0.0",
+    title="Album Press",
+    description="Async image batch → compressed ZIP + album PDF",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
